@@ -223,7 +223,17 @@ app.post('/webhook', async (req, res) => {
         const name     = customer.name || meta.discord_username || '';
         const email    = customer.email || meta.discord_email || '';
 
-        // Save/update member record
+        // Save Discord ID to Stripe customer metadata
+        // This ensures we can ALWAYS find the Discord ID even if DB is wiped
+        await stripe.customers.update(custId, {
+          metadata: {
+            discord_id:       discordId,
+            discord_username: meta.discord_username || '',
+            plan,
+          }
+        });
+
+        // Save full member record to DB
         db.saveMember({
           stripeCustomerId: custId,
           discordId,
@@ -253,19 +263,47 @@ app.post('/webhook', async (req, res) => {
         break;
       }
 
-      // ── Subscription renewal (ensure roles stay active) ──
+      // ── Subscription renewal / returning user re-subscribes ──
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object;
         if (invoice.billing_reason === 'subscription_create') break; // handled by checkout.session.completed
 
         const custId = invoice.customer;
-        const record = db.getByStripeId(custId);
+        let record   = db.getByStripeId(custId);
+
+        // If no record — look up from Stripe (handles returning users)
+        if (!record?.discordId) {
+          try {
+            const customer  = await stripe.customers.retrieve(custId);
+            const discordId = customer.metadata?.discord_id;
+            if (!discordId) break;
+
+            // Get plan from active subscription
+            const subs    = await stripe.subscriptions.list({ customer: custId, status: 'active', limit: 1 });
+            const sub     = subs.data[0];
+            const priceId = sub?.items?.data?.[0]?.price?.id;
+            const plan    = Object.entries(PLAN_PRICES).find(([, intervals]) =>
+              Object.values(intervals).includes(priceId)
+            )?.[0] || customer.metadata?.plan || '';
+
+            record = db.saveMember({
+              stripeCustomerId: custId,
+              discordId,
+              discordUsername:  customer.metadata?.discord_username || '',
+              email:            customer.email || '',
+              name:             customer.name  || '',
+              plan,
+              status:           'active',
+            });
+          } catch (e) { break; }
+        }
+
         if (!record?.discordId) break;
 
-        // Re-assign roles on renewal (catches any accidental role removal)
+        // Re-assign roles on renewal — ensures roles stay active
         await assignPaidRole(record.discordId, record.plan);
         db.updateStatus(custId, 'active', null);
-        console.log(`🔄 Renewal confirmed: ${record.name} → ${record.plan}`);
+        console.log(`🔄 Renewal confirmed: ${record.name || record.discordId} → ${record.plan}`);
         break;
       }
 
@@ -286,11 +324,38 @@ app.post('/webhook', async (req, res) => {
       case 'customer.subscription.deleted': {
         const sub    = event.data.object;
         const custId = sub.customer;
-        const record = db.getByStripeId(custId);
+        let record   = db.getByStripeId(custId);
 
+        // If no DB record — look up Discord ID from Stripe customer metadata
+        // This handles returning users, old bot members, any edge case
         if (!record?.discordId) {
-          console.warn(`⚠️  No record for Stripe customer ${custId}`);
-          break;
+          console.log(`⚠️  No DB record for ${custId} — checking Stripe metadata...`);
+          try {
+            const customer  = await stripe.customers.retrieve(custId);
+            const discordId = customer.metadata?.discord_id;
+
+            if (discordId) {
+              console.log(`✅ Found Discord ID from Stripe metadata: ${discordId}`);
+              // Get plan from subscription metadata
+              const plan = sub.metadata?.plan || customer.metadata?.plan || '';
+              // Save to DB for future events
+              record = db.saveMember({
+                stripeCustomerId: custId,
+                discordId,
+                discordUsername:  customer.metadata?.discord_username || '',
+                email:            customer.email || '',
+                name:             customer.name  || '',
+                plan,
+                status:           'cancelled',
+              });
+            } else {
+              console.warn(`❌ No Discord ID found anywhere for ${custId} — cannot remove roles`);
+              break;
+            }
+          } catch (e) {
+            console.error(`❌ Could not retrieve Stripe customer ${custId}:`, e.message);
+            break;
+          }
         }
 
         // Remove paid roles, keep Free role
@@ -301,16 +366,16 @@ app.post('/webhook', async (req, res) => {
 
         // Send email notification
         await sendMembershipEnded({
-          name:            record.name,
-          email:           record.email,
-          discordId:       record.discordId,
-          discordUsername: record.discordUsername,
-          plan:            record.plan,
-          reason:          sub.cancellation_details?.reason || 'cancelled',
+          name:             record.name,
+          email:            record.email,
+          discordId:        record.discordId,
+          discordUsername:  record.discordUsername,
+          plan:             record.plan,
+          reason:           sub.cancellation_details?.reason || 'cancelled',
           stripeCustomerId: custId,
         });
 
-        console.log(`❌ Subscription ended: ${record.name} → downgraded to Free`);
+        console.log(`❌ Subscription ended: ${record.name || record.discordId} → downgraded to Free`);
         break;
       }
 
