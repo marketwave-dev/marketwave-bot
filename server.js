@@ -411,6 +411,48 @@ app.get('/admin/sync', async (req, res) => {
 // ── Health check for Render.com ───────────────────────────
 app.get('/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
+// ── Live stock ticker API ─────────────────────────────────
+// Called by the website — runs server-side so no CORS issues
+// Returns last price when market closed, live price when open
+app.get('/api/ticker', async (req, res) => {
+  // Allow website to call this endpoint
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Cache-Control', 'public, max-age=30');
+
+  const SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
+  const syms    = SYMBOLS.join(',');
+  const fields  = 'symbol,regularMarketPrice,regularMarketChange,regularMarketChangePercent,marketState';
+  const urls    = [
+    `https://query1.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}`,
+    `https://query2.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const response = await axios.get(url, {
+        timeout: 8000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
+      const quotes = response.data?.quoteResponse?.result;
+      if (!quotes || quotes.length === 0) continue;
+
+      return res.json({
+        success: true,
+        quotes: quotes.map(q => ({
+          symbol: q.symbol,
+          price:  q.regularMarketPrice,
+          change: q.regularMarketChange,
+          pct:    q.regularMarketChangePercent,
+          state:  q.marketState,
+        }))
+      });
+    } catch (e) { continue; }
+  }
+
+  res.status(500).json({ success: false, error: 'Unable to fetch prices' });
+});
+
 // ── Start ─────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

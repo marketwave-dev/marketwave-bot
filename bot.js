@@ -32,19 +32,29 @@ client.once('ready', () => {
   validateRoles();
 });
 
-// ── New member joins server → give Free role ──────────────
+// ── New member joins server → give Free role + any pending paid role ──
 client.on('guildMemberAdd', async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   try {
     const freeRoleId = getFreeRoleId();
-    if (!freeRoleId) {
-      console.warn('⚠️  Free role ID not set. Skipping auto-assign.');
-      return;
+    if (freeRoleId) {
+      await member.roles.add(freeRoleId);
+      console.log(`✅ Free role → ${member.user.tag} (${member.user.id})`);
     }
-    await member.roles.add(freeRoleId);
-    console.log(`✅ Free role → ${member.user.tag} (${member.user.id})`);
+
+    // Check if this member has a paid subscription in DB
+    // (handles case where they paid BEFORE joining Discord)
+    const record = db.getByDiscordId(member.user.id);
+    if (record && record.status === 'active' && record.plan) {
+      const { getRoleId } = require('./roles');
+      const paidRoleId = getRoleId(record.plan);
+      if (paidRoleId) {
+        await member.roles.add(paidRoleId);
+        console.log(`✅ Paid role auto-assigned on join → ${member.user.tag} → ${record.plan}`);
+      }
+    }
   } catch (err) {
-    console.error(`❌ Failed to assign free role to ${member.user.tag}:`, err.message);
+    console.error(`❌ Failed to assign role to ${member.user.tag}:`, err.message);
   }
 });
 
