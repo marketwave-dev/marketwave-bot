@@ -420,3 +420,7 @@ app.listen(PORT, () => {
 // Start Discord bot
 const { startBot: boot } = require('./bot');
 boot();
+
+// Start daily report scheduler (sends Excel at 8am ET every day)
+const { scheduleDailyReport } = require('./daily-report');
+scheduleDailyReport();
