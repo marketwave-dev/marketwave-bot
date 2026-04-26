@@ -477,29 +477,34 @@ app.get('/admin/sync', async (req, res) => {
 app.get('/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
 // ── Live stock ticker API ─────────────────────────────────
-// Called by the website — runs server-side so no CORS issues
-// Returns last price when market closed, live price when open
 app.get('/api/ticker', async (req, res) => {
-  // Allow website to call this endpoint
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Cache-Control', 'public, max-age=30');
 
   const SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
   const syms    = SYMBOLS.join(',');
-  const fields  = 'symbol,regularMarketPrice,regularMarketChange,regularMarketChangePercent,marketState';
-  const urls    = [
-    `https://query1.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}`,
-    `https://query2.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}`,
+
+  const headers = {
+    'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept':          'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Origin':          'https://finance.yahoo.com',
+    'Referer':         'https://finance.yahoo.com/',
+  };
+
+  const fields = 'symbol,regularMarketPrice,regularMarketChange,regularMarketChangePercent,marketState';
+  const urls = [
+    `https://query1.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}&formatted=false`,
+    `https://query2.finance.yahoo.com/v8/finance/quote?symbols=${syms}&fields=${fields}&formatted=false`,
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${syms}`,
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${syms}`,
   ];
 
   for (const url of urls) {
     try {
-      const response = await axios.get(url, {
-        timeout: 8000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-      });
-      const quotes = response.data?.quoteResponse?.result;
+      const response = await axios.get(url, { timeout: 10000, headers });
+      const quotes   = response.data?.quoteResponse?.result;
       if (!quotes || quotes.length === 0) continue;
 
       return res.json({
@@ -512,8 +517,27 @@ app.get('/api/ticker', async (req, res) => {
           state:  q.marketState,
         }))
       });
-    } catch (e) { continue; }
+    } catch (e) {
+      console.log(`Ticker attempt failed (${url.substring(0,50)}...): ${e.message}`);
+      continue;
+    }
   }
+
+  // Last resort — try fetching individual symbols
+  try {
+    const results = [];
+    for (const sym of SYMBOLS.slice(0, 5)) { // try first 5
+      const r = await axios.get(
+        `https://query1.finance.yahoo.com/v8/finance/quote?symbols=${sym}&fields=${fields}`,
+        { timeout: 5000, headers }
+      );
+      const q = r.data?.quoteResponse?.result?.[0];
+      if (q) results.push({ symbol: q.symbol, price: q.regularMarketPrice, change: q.regularMarketChange, pct: q.regularMarketChangePercent, state: q.marketState });
+    }
+    if (results.length > 0) {
+      return res.json({ success: true, quotes: results });
+    }
+  } catch (e) {}
 
   res.status(500).json({ success: false, error: 'Unable to fetch prices' });
 });
