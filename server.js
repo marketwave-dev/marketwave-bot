@@ -36,42 +36,67 @@ const PLAN_PRICES = {
 };
 
 // ══════════════════════════════════════════════════════════
-// LIVE STOCK TICKER — yahoo-finance2 npm package
-// Works server-side, no API key needed, handles Yahoo auth
+// LIVE STOCK TICKER — yahoo-finance2 with persistent cache
+// Cache means prices ALWAYS show even if refresh fails
 // ══════════════════════════════════════════════════════════
-app.get('/api/ticker', async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'public, max-age=30');
+let tickerCache    = null; // last known good prices
+let tickerFetching = false;
 
-  const SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
+const TICKER_SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
 
+async function fetchTickerPrices() {
+  if (tickerFetching) return; // prevent overlapping fetches
+  tickerFetching = true;
   try {
     const yahooFinance = require('yahoo-finance2').default;
-
     const results = await Promise.all(
-      SYMBOLS.map(async (symbol) => {
+      TICKER_SYMBOLS.map(async (symbol) => {
         try {
           const q = await yahooFinance.quote(symbol, {}, { validateResult: false });
           return {
             symbol,
-            price:  q.regularMarketPrice  || 0,
-            change: q.regularMarketChange || 0,
-            pct:    q.regularMarketChangePercent || 0,
+            price:  q.regularMarketPrice         || 0,
+            change: q.regularMarketChange         || 0,
+            pct:    q.regularMarketChangePercent  || 0,
           };
         } catch {
-          return { symbol, price: 0, change: 0, pct: 0 };
+          return null;
         }
       })
     );
-
-    const valid = results.filter(r => r.price > 0);
-    if (valid.length === 0) return res.status(500).json({ success: false, error: 'No prices returned' });
-
-    return res.json({ success: true, quotes: valid });
+    const valid = results.filter(r => r && r.price > 0);
+    if (valid.length > 0) {
+      tickerCache = valid;
+      console.log(`📈 Ticker updated — ${valid.length} symbols`);
+    }
   } catch (e) {
-    console.error('Ticker error:', e.message);
-    return res.status(500).json({ success: false, error: 'Unable to fetch prices' });
+    console.log('Ticker fetch failed — using cache:', e.message);
+  } finally {
+    tickerFetching = false;
   }
+}
+
+// Fetch immediately on server start then every 60 seconds
+fetchTickerPrices();
+setInterval(fetchTickerPrices, 60000);
+
+app.get('/api/ticker', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, max-age=30');
+
+  // If cache is empty wait up to 10s for first fetch
+  if (!tickerCache) {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (tickerCache) break;
+    }
+  }
+
+  if (tickerCache && tickerCache.length > 0) {
+    return res.json({ success: true, quotes: tickerCache });
+  }
+
+  return res.status(500).json({ success: false, error: 'Prices not yet loaded' });
 });
 
 // ══════════════════════════════════════════════════════════
