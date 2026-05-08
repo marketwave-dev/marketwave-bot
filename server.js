@@ -65,28 +65,47 @@ async function fetchTickerPrices() {
     if (!apiKey) { console.log('📈 Ticker: TWELVEDATA_API_KEY not set'); return; }
 
     const syms = TICKER_SYMBOLS.join(',');
+
+    // Use /quote endpoint — returns price + change + percent_change
     const url  = `https://api.twelvedata.com/quote?symbol=${syms}&apikey=${apiKey}`;
     console.log('📈 Ticker: calling Twelve Data...');
 
-    const res  = await axios.get(url, { timeout: 15000 });
+    const res  = await axios.get(url, {
+      timeout: 15000,
+      headers: { 'User-Agent': 'MarketWave/1.0' }
+    });
     const data = res.data;
 
-    if (!data) { console.log('📈 Ticker: no data returned'); return; }
-
-    console.log('📈 Raw sample:', JSON.stringify(data).substring(0, 200));
+    if (!data) { console.log('📈 Ticker: no data'); return; }
 
     const results = [];
+
     for (const symbol of TICKER_SYMBOLS) {
       try {
         const q = data[symbol];
-        if (!q || q.code || !q.close) continue;
-        results.push({
-          symbol,
-          price:  parseFloat(q.close)           || 0,
-          change: parseFloat(q.change)           || 0,
-          pct:    parseFloat(q.percent_change)   || 0,
-        });
+        if (!q || q.status === 'error') {
+          // Fallback: try /price for this symbol
+          continue;
+        }
+        const price  = parseFloat(q.close)           || 0;
+        const change = parseFloat(q.change)           || 0;
+        const pct    = parseFloat(q.percent_change)   || 0;
+        if (price > 0) results.push({ symbol, price, change, pct });
       } catch {}
+    }
+
+    // If quote failed, try price endpoint as fallback
+    if (results.length === 0) {
+      console.log('📈 Trying /price endpoint fallback...');
+      const priceRes  = await axios.get(
+        `https://api.twelvedata.com/price?symbol=${syms}&apikey=${apiKey}`,
+        { timeout: 15000 }
+      );
+      const priceData = priceRes.data;
+      for (const symbol of TICKER_SYMBOLS) {
+        const p = parseFloat(priceData[symbol]?.price || priceData?.price || 0);
+        if (p > 0) results.push({ symbol, price: p, change: 0, pct: 0 });
+      }
     }
 
     if (results.length > 0) {
@@ -94,7 +113,7 @@ async function fetchTickerPrices() {
       try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
       console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
     } else {
-      console.log('📈 Ticker: no valid prices. Full response:', JSON.stringify(data).substring(0, 500));
+      console.log('📈 Ticker: no prices returned. Sample:', JSON.stringify(data).substring(0, 300));
     }
   } catch (e) {
     console.error('📈 Ticker error:', e.message);
