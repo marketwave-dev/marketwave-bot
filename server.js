@@ -110,9 +110,19 @@ async function fetchTickerPrices() {
   }
 }
 
-// Fetch on startup then every 10 minutes (batching takes 65 seconds)
+// Fetch on startup then every 15 minutes ONLY during market hours
 setTimeout(fetchTickerPrices, 5000);
-setInterval(fetchTickerPrices, 600000);
+
+function scheduleTickerRefresh() {
+  const et   = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day  = et.getDay();
+  const mins = et.getHours() * 60 + et.getMinutes();
+  const open = day >= 1 && day <= 5 && mins >= 570 && mins < 960;
+  // Refresh every 15 min when market open, every 2 hours when closed
+  const delay = open ? 900000 : 7200000;
+  setTimeout(() => { fetchTickerPrices().then(scheduleTickerRefresh); }, delay);
+}
+scheduleTickerRefresh();
 
 app.get('/api/ticker', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
