@@ -36,57 +36,77 @@ const PLAN_PRICES = {
 };
 
 // ══════════════════════════════════════════════════════════
-// LIVE STOCK TICKER — yahoo-finance2 with persistent cache
-// Cache means prices ALWAYS show even if refresh fails
+// LIVE STOCK TICKER
 // ══════════════════════════════════════════════════════════
-let tickerCache    = null; // last known good prices
+const fs   = require('fs');
+const path = require('path');
+const TICKER_CACHE_FILE = path.join(__dirname, 'ticker-cache.json');
+const TICKER_SYMBOLS    = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
+
+let tickerCache    = null;
 let tickerFetching = false;
 
-const TICKER_SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
+// Load cache from file on startup (survives restarts)
+try {
+  if (fs.existsSync(TICKER_CACHE_FILE)) {
+    tickerCache = JSON.parse(fs.readFileSync(TICKER_CACHE_FILE, 'utf8'));
+    console.log(`📈 Ticker: loaded ${tickerCache.length} cached prices from disk`);
+  }
+} catch (e) { console.log('Ticker: no cache file yet'); }
 
 async function fetchTickerPrices() {
-  if (tickerFetching) return; // prevent overlapping fetches
+  if (tickerFetching) return;
   tickerFetching = true;
+  console.log('📈 Ticker: fetching prices...');
+
   try {
-    const yahooFinance = require('yahoo-finance2').default;
-    const results = await Promise.all(
-      TICKER_SYMBOLS.map(async (symbol) => {
-        try {
-          const q = await yahooFinance.quote(symbol, {}, { validateResult: false });
-          return {
+    const yf = require('yahoo-finance2').default;
+    const results = [];
+
+    for (const symbol of TICKER_SYMBOLS) {
+      try {
+        const q = await yf.quote(symbol, {}, { validateResult: false });
+        if (q && q.regularMarketPrice) {
+          results.push({
             symbol,
-            price:  q.regularMarketPrice         || 0,
-            change: q.regularMarketChange         || 0,
-            pct:    q.regularMarketChangePercent  || 0,
-          };
-        } catch {
-          return null;
+            price:  q.regularMarketPrice,
+            change: q.regularMarketChange        || 0,
+            pct:    q.regularMarketChangePercent || 0,
+          });
         }
-      })
-    );
-    const valid = results.filter(r => r && r.price > 0);
-    if (valid.length > 0) {
-      tickerCache = valid;
-      console.log(`📈 Ticker updated — ${valid.length} symbols`);
+      } catch (e) {
+        console.log(`Ticker: failed ${symbol} — ${e.message}`);
+      }
+      // Small delay between requests to avoid rate limiting
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (results.length > 0) {
+      tickerCache = results;
+      // Save to file so cache survives restarts
+      try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
+      console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
+    } else {
+      console.log('📈 Ticker: no results returned — keeping existing cache');
     }
   } catch (e) {
-    console.log('Ticker fetch failed — using cache:', e.message);
+    console.error('📈 Ticker fetch error:', e.message);
   } finally {
     tickerFetching = false;
   }
 }
 
-// Fetch immediately on server start then every 60 seconds
-fetchTickerPrices();
+// Fetch on startup then every 60 seconds
+setTimeout(fetchTickerPrices, 3000); // wait 3s for bot to fully start
 setInterval(fetchTickerPrices, 60000);
 
 app.get('/api/ticker', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, max-age=30');
 
-  // If cache is empty wait up to 10s for first fetch
+  // Wait up to 15s for first fetch if cache is empty
   if (!tickerCache) {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000));
       if (tickerCache) break;
     }
@@ -96,7 +116,7 @@ app.get('/api/ticker', async (req, res) => {
     return res.json({ success: true, quotes: tickerCache });
   }
 
-  return res.status(500).json({ success: false, error: 'Prices not yet loaded' });
+  return res.status(500).json({ success: false, error: 'Prices not yet loaded — try again in 30 seconds' });
 });
 
 // ══════════════════════════════════════════════════════════
