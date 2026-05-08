@@ -1,11 +1,10 @@
 {
   "name": "marketwave-bot",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "MarketWave Discord bot — role management, Stripe webhooks, email alerts, daily reports",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
@@ -14,6 +13,7 @@
     "nodemailer": "^6.9.8",
     "dotenv": "^16.3.1",
     "axios": "^1.6.5",
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "yahoo-finance2": "^2.11.3"
   }
 }

@@ -36,39 +36,40 @@ const PLAN_PRICES = {
 };
 
 // ══════════════════════════════════════════════════════════
-// LIVE STOCK TICKER — Finnhub API
+// LIVE STOCK TICKER — yahoo-finance2 npm package
+// Works server-side, no API key needed, handles Yahoo auth
 // ══════════════════════════════════════════════════════════
 app.get('/api/ticker', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, max-age=30');
 
   const SYMBOLS = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL','GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
-  const token   = process.env.FINNHUB_API_KEY;
-
-  if (!token) return res.status(500).json({ success: false, error: 'Missing API key' });
 
   try {
+    const yahooFinance = require('yahoo-finance2').default;
+
     const results = await Promise.all(
       SYMBOLS.map(async (symbol) => {
         try {
-          const r = await axios.get(
-            `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${token}`,
-            { timeout: 8000 }
-          );
-          const d = r.data;
+          const q = await yahooFinance.quote(symbol, {}, { validateResult: false });
           return {
             symbol,
-            price:  d.c  || d.pc || 0,
-            change: d.d  || 0,
-            pct:    d.dp || 0,
+            price:  q.regularMarketPrice  || 0,
+            change: q.regularMarketChange || 0,
+            pct:    q.regularMarketChangePercent || 0,
           };
         } catch {
           return { symbol, price: 0, change: 0, pct: 0 };
         }
       })
     );
-    return res.json({ success: true, quotes: results.filter(r => r.price > 0) });
+
+    const valid = results.filter(r => r.price > 0);
+    if (valid.length === 0) return res.status(500).json({ success: false, error: 'No prices returned' });
+
+    return res.json({ success: true, quotes: valid });
   } catch (e) {
+    console.error('Ticker error:', e.message);
     return res.status(500).json({ success: false, error: 'Unable to fetch prices' });
   }
 });
