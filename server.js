@@ -61,33 +61,44 @@ async function fetchTickerPrices() {
   console.log('📈 Ticker: fetching prices...');
 
   try {
-    const apiKey  = process.env.FMP_API_KEY;
-    if (!apiKey) { console.log('📈 Ticker: FMP_API_KEY not set'); return; }
+    const apiKey = process.env.TWELVEDATA_API_KEY;
+    if (!apiKey) { console.log('📈 Ticker: TWELVEDATA_API_KEY not set'); return; }
 
-    const syms    = TICKER_SYMBOLS.join(',');
-    const url     = `https://financialmodelingprep.com/api/v3/quote/${syms}?apikey=${apiKey}`;
-    const res     = await axios.get(url, { timeout: 10000 });
-    const quotes  = res.data;
+    const syms = TICKER_SYMBOLS.join(',');
+    const url  = `https://api.twelvedata.com/quote?symbol=${syms}&apikey=${apiKey}`;
+    console.log('📈 Ticker: calling Twelve Data...');
 
-    if (!quotes || !Array.isArray(quotes) || quotes.length === 0) {
-      console.log('📈 Ticker: empty response from FMP');
-      return;
+    const res  = await axios.get(url, { timeout: 15000 });
+    const data = res.data;
+
+    if (!data) { console.log('📈 Ticker: no data returned'); return; }
+
+    console.log('📈 Raw sample:', JSON.stringify(data).substring(0, 200));
+
+    const results = [];
+    for (const symbol of TICKER_SYMBOLS) {
+      try {
+        const q = data[symbol];
+        if (!q || q.code || !q.close) continue;
+        results.push({
+          symbol,
+          price:  parseFloat(q.close)           || 0,
+          change: parseFloat(q.change)           || 0,
+          pct:    parseFloat(q.percent_change)   || 0,
+        });
+      } catch {}
     }
-
-    const results = quotes.map(q => ({
-      symbol: q.symbol,
-      price:  q.price  || 0,
-      change: q.change || 0,
-      pct:    q.changesPercentage || 0,
-    })).filter(r => r.price > 0);
 
     if (results.length > 0) {
       tickerCache = results;
       try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
       console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
+    } else {
+      console.log('📈 Ticker: no valid prices. Full response:', JSON.stringify(data).substring(0, 500));
     }
   } catch (e) {
     console.error('📈 Ticker error:', e.message);
+    if (e.response?.data) console.error('📈 Response:', JSON.stringify(e.response.data).substring(0, 300));
   } finally {
     tickerFetching = false;
   }
