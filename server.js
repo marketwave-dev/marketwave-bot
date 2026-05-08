@@ -64,48 +64,35 @@ async function fetchTickerPrices() {
     const apiKey = process.env.TWELVEDATA_API_KEY;
     if (!apiKey) { console.log('📈 Ticker: TWELVEDATA_API_KEY not set'); return; }
 
-    const syms = TICKER_SYMBOLS.join(',');
+    // Split into 2 batches of 8 — free tier limit is 8 credits/minute
+    const BATCH1 = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL'];
+    const BATCH2 = ['GOOGL','AMD','MU','PLTR','HOOD','COIN','MSTR'];
 
-    // Use /quote endpoint — returns price + change + percent_change
-    const url  = `https://api.twelvedata.com/quote?symbol=${syms}&apikey=${apiKey}`;
-    console.log('📈 Ticker: calling Twelve Data...');
+    const fetchBatch = async (symbols) => {
+      const syms = symbols.join(',');
+      const res  = await axios.get(
+        `https://api.twelvedata.com/price?symbol=${syms}&apikey=${apiKey}`,
+        { timeout: 10000 }
+      );
+      return res.data;
+    };
 
-    const res  = await axios.get(url, {
-      timeout: 15000,
-      headers: { 'User-Agent': 'MarketWave/1.0' }
-    });
-    const data = res.data;
+    console.log('📈 Ticker: fetching batch 1...');
+    const data1   = await fetchBatch(BATCH1);
+    console.log('📈 Batch 1 done. Waiting 65 seconds for batch 2...');
+    await new Promise(r => setTimeout(r, 65000));
+    console.log('📈 Ticker: fetching batch 2...');
+    const data2   = await fetchBatch(BATCH2);
 
-    if (!data) { console.log('📈 Ticker: no data'); return; }
-
+    const allData = { ...data1, ...data2 };
     const results = [];
 
     for (const symbol of TICKER_SYMBOLS) {
       try {
-        const q = data[symbol];
-        if (!q || q.status === 'error') {
-          // Fallback: try /price for this symbol
-          continue;
-        }
-        const price  = parseFloat(q.close)           || 0;
-        const change = parseFloat(q.change)           || 0;
-        const pct    = parseFloat(q.percent_change)   || 0;
-        if (price > 0) results.push({ symbol, price, change, pct });
+        const entry = allData[symbol];
+        const price = parseFloat(entry?.price || 0);
+        if (price > 0) results.push({ symbol, price, change: 0, pct: 0 });
       } catch {}
-    }
-
-    // If quote failed, try price endpoint as fallback
-    if (results.length === 0) {
-      console.log('📈 Trying /price endpoint fallback...');
-      const priceRes  = await axios.get(
-        `https://api.twelvedata.com/price?symbol=${syms}&apikey=${apiKey}`,
-        { timeout: 15000 }
-      );
-      const priceData = priceRes.data;
-      for (const symbol of TICKER_SYMBOLS) {
-        const p = parseFloat(priceData[symbol]?.price || priceData?.price || 0);
-        if (p > 0) results.push({ symbol, price: p, change: 0, pct: 0 });
-      }
     }
 
     if (results.length > 0) {
@@ -113,7 +100,7 @@ async function fetchTickerPrices() {
       try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
       console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
     } else {
-      console.log('📈 Ticker: no prices returned. Sample:', JSON.stringify(data).substring(0, 300));
+      console.log('📈 No prices. Data sample:', JSON.stringify(allData).substring(0, 300));
     }
   } catch (e) {
     console.error('📈 Ticker error:', e.message);
@@ -123,9 +110,9 @@ async function fetchTickerPrices() {
   }
 }
 
-// Fetch on startup then every 5 minutes
-setTimeout(fetchTickerPrices, 3000);
-setInterval(fetchTickerPrices, 300000);
+// Fetch on startup then every 10 minutes (batching takes 65 seconds)
+setTimeout(fetchTickerPrices, 5000);
+setInterval(fetchTickerPrices, 600000);
 
 app.get('/api/ticker', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
