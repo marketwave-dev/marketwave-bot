@@ -36,7 +36,8 @@ const PLAN_PRICES = {
 };
 
 // ══════════════════════════════════════════════════════════
-// LIVE STOCK TICKER
+// LIVE STOCK TICKER — Financial Modeling Prep API
+// Free tier: 250 calls/day, works from any server
 // ══════════════════════════════════════════════════════════
 const fs   = require('fs');
 const path = require('path');
@@ -46,7 +47,7 @@ const TICKER_SYMBOLS    = ['SPY','QQQ','IWM','NVDA','TSLA','META','MSFT','AAPL',
 let tickerCache    = null;
 let tickerFetching = false;
 
-// Load cache from file on startup (survives restarts)
+// Load cache from file on startup
 try {
   if (fs.existsSync(TICKER_CACHE_FILE)) {
     tickerCache = JSON.parse(fs.readFileSync(TICKER_CACHE_FILE, 'utf8'));
@@ -60,50 +61,46 @@ async function fetchTickerPrices() {
   console.log('📈 Ticker: fetching prices...');
 
   try {
-    // Use dynamic import — required for Node.js v24 compatibility
-    const { default: yf } = await import('yahoo-finance2');
-    const results = [];
+    const apiKey  = process.env.FMP_API_KEY;
+    if (!apiKey) { console.log('📈 Ticker: FMP_API_KEY not set'); return; }
 
-    for (const symbol of TICKER_SYMBOLS) {
-      try {
-        const q = await yf.quote(symbol, {}, { validateResult: false });
-        if (q && q.regularMarketPrice) {
-          results.push({
-            symbol,
-            price:  q.regularMarketPrice,
-            change: q.regularMarketChange        || 0,
-            pct:    q.regularMarketChangePercent || 0,
-          });
-        }
-      } catch (e) {
-        console.log(`Ticker: failed ${symbol} — ${e.message}`);
-      }
-      await new Promise(r => setTimeout(r, 200));
+    const syms    = TICKER_SYMBOLS.join(',');
+    const url     = `https://financialmodelingprep.com/api/v3/quote/${syms}?apikey=${apiKey}`;
+    const res     = await axios.get(url, { timeout: 10000 });
+    const quotes  = res.data;
+
+    if (!quotes || !Array.isArray(quotes) || quotes.length === 0) {
+      console.log('📈 Ticker: empty response from FMP');
+      return;
     }
+
+    const results = quotes.map(q => ({
+      symbol: q.symbol,
+      price:  q.price  || 0,
+      change: q.change || 0,
+      pct:    q.changesPercentage || 0,
+    })).filter(r => r.price > 0);
 
     if (results.length > 0) {
       tickerCache = results;
       try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
       console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
-    } else {
-      console.log('📈 Ticker: no results — keeping cache');
     }
   } catch (e) {
-    console.error('📈 Ticker fetch error:', e.message);
+    console.error('📈 Ticker error:', e.message);
   } finally {
     tickerFetching = false;
   }
 }
 
-// Fetch on startup then every 60 seconds
-setTimeout(fetchTickerPrices, 3000); // wait 3s for bot to fully start
-setInterval(fetchTickerPrices, 60000);
+// Fetch on startup then every 5 minutes
+setTimeout(fetchTickerPrices, 3000);
+setInterval(fetchTickerPrices, 300000);
 
 app.get('/api/ticker', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'public, max-age=30');
+  res.setHeader('Cache-Control', 'public, max-age=60');
 
-  // Wait up to 15s for first fetch if cache is empty
   if (!tickerCache) {
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000));
@@ -115,7 +112,7 @@ app.get('/api/ticker', async (req, res) => {
     return res.json({ success: true, quotes: tickerCache });
   }
 
-  return res.status(500).json({ success: false, error: 'Prices not yet loaded — try again in 30 seconds' });
+  return res.status(500).json({ success: false, error: 'Prices loading — try again shortly' });
 });
 
 // ══════════════════════════════════════════════════════════
