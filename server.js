@@ -60,7 +60,8 @@ async function fetchTickerPrices() {
   console.log('📈 Ticker: fetching prices...');
 
   try {
-    const yf = require('yahoo-finance2').default;
+    // Use dynamic import — required for Node.js v24 compatibility
+    const { default: yf } = await import('yahoo-finance2');
     const results = [];
 
     for (const symbol of TICKER_SYMBOLS) {
@@ -77,17 +78,15 @@ async function fetchTickerPrices() {
       } catch (e) {
         console.log(`Ticker: failed ${symbol} — ${e.message}`);
       }
-      // Small delay between requests to avoid rate limiting
       await new Promise(r => setTimeout(r, 200));
     }
 
     if (results.length > 0) {
       tickerCache = results;
-      // Save to file so cache survives restarts
       try { fs.writeFileSync(TICKER_CACHE_FILE, JSON.stringify(results)); } catch {}
       console.log(`📈 Ticker: updated ${results.length} symbols ✅`);
     } else {
-      console.log('📈 Ticker: no results returned — keeping existing cache');
+      console.log('📈 Ticker: no results — keeping cache');
     }
   } catch (e) {
     console.error('📈 Ticker fetch error:', e.message);
