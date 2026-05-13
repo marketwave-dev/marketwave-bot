@@ -71,7 +71,7 @@ async function fetchTickerPrices() {
     const fetchBatch = async (symbols) => {
       const syms = symbols.join(',');
       const res  = await axios.get(
-        `https://api.twelvedata.com/price?symbol=${syms}&apikey=${apiKey}`,
+        `https://api.twelvedata.com/quote?symbol=${syms}&apikey=${apiKey}`,
         { timeout: 10000 }
       );
       return res.data;
@@ -89,9 +89,14 @@ async function fetchTickerPrices() {
 
     for (const symbol of TICKER_SYMBOLS) {
       try {
-        const entry = allData[symbol];
-        const price = parseFloat(entry?.price || 0);
-        if (price > 0) results.push({ symbol, price, change: 0, pct: 0 });
+        const q = allData[symbol];
+if (!q || q.status === 'error' || !q.close) continue;
+results.push({
+  symbol,
+  price:  parseFloat(q.close)         || 0,
+  change: parseFloat(q.change)        || 0,
+  pct:    parseFloat(q.percent_change)|| 0,
+});
       } catch {}
     }
 
